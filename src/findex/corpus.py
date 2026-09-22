@@ -2,7 +2,7 @@ from pathlib import Path
 
 
 def iter_documents(folder_path):
-    """Потоково повертає кортежі (filename, text) через yield."""
+    #Потоково повертає кортежі (filename, text) через yield.
     path = Path(folder_path)
     for file_path in path.glob("*.txt"):
         if file_path.name.startswith("~") or file_path.name.startswith("."):
@@ -12,7 +12,7 @@ def iter_documents(folder_path):
 
 
 def load_all_documents(folder_path):
-    """Жадібно зчитує весь корпус файлів у пам'ять."""
+    #Жадібно зчитує весь корпус файлів у пам'ять.
     path = Path(folder_path)
     docs = []
     for file_path in path.glob("*.txt"):
