@@ -14,12 +14,22 @@ from pathlib import Path
 from rich.live import Live
 from rich.table import Table
 import typer
+import uvicorn
 
 from findex.builder import ExecutorType, build_index_parallel
 from findex.crawler import AsyncCrawler
 from findex.search_engine import SearchEngine, SearchResult
 
 app = typer.Typer(help="Findex: A simple text search engine CLI")
+
+
+@app.command(name="serve")
+def serve(
+    port: int = typer.Option(8000, "--port", "-p", help="Port to run server on"),
+    workers: int = typer.Option(1, "--workers", "-w", help="Number of worker processes"),
+) -> None:
+    """Start the FastAPI web server."""
+    uvicorn.run("findex.web.app:app", host="0.0.0.0", port=port, workers=workers, reload=False)
 
 
 @app.command(name="crawl")
@@ -127,7 +137,6 @@ def search(
 
 
 def index_main() -> None:
-    """Прямий виклик з перехопленням успішного виходу SystemExit(0)."""
     try:
         typer.run(index)
     except SystemExit as e:
@@ -137,7 +146,6 @@ def index_main() -> None:
 
 
 def search_main() -> None:
-    """Прямий виклик з перехопленням успішного виходу SystemExit(0)."""
     try:
         typer.run(search)
     except SystemExit as e:
