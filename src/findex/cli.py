@@ -20,6 +20,7 @@ from findex.builder import ExecutorType, build_index_parallel
 from findex.crawler import AsyncCrawler
 from findex.search_engine import SearchEngine, SearchResult
 
+# ГОЛОВНИЙ ОБ'ЄКТ TYPER (Обов'язково має бути перед декораторами @app.command)
 app = typer.Typer(help="Findex: A simple text search engine CLI")
 
 
@@ -30,6 +31,37 @@ def serve(
 ) -> None:
     """Start the FastAPI web server."""
     uvicorn.run("findex.web.app:app", host="0.0.0.0", port=port, workers=workers, reload=False)
+
+
+@app.command(name="profile")
+def profile_search(
+    query: str = typer.Argument("python search engine", help="Query to profile"),
+) -> None:
+    """Профілювання пошуку через cProfile для аналізу продуктивності (Лаб 8)."""
+    import cProfile
+    import pstats
+
+    index_path = Path("index.json")
+    if not index_path.exists():
+        print("❌ Індекс не знайдено! Спочатку зберіть індекс командою: findex index ...")
+        raise typer.Exit(code=1)
+
+    print(f"🔍 Запуск профілювання для запиту: '{query}'...")
+    engine = SearchEngine(index_path)
+
+    profiler = cProfile.Profile()
+    profiler.enable()
+
+    # Виконуємо серію запитів для накопичення надійної статистики
+    for _ in range(100):
+        engine.search(query)
+
+    profiler.disable()
+
+    # Виводимо топ-15 найзатратніших функцій у термінал
+    stats = pstats.Stats(profiler).sort_stats("cumtime")
+    print("\n📊 Результати профілювання (Top 15 за часом виконання):")
+    stats.print_stats(15)
 
 
 @app.command(name="crawl")
