@@ -5,7 +5,7 @@ from _pytest.monkeypatch import MonkeyPatch
 import pytest
 
 from findex.cli import main as cli_main
-from findex.index import main as index_main
+from findex.cli import main as index_main
 from findex.search import main as search_main
 
 

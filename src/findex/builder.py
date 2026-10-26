@@ -1,117 +1,63 @@
-from __future__ import annotations
-
-import collections.abc
-from collections.abc import Generator, Iterator
-from contextlib import contextmanager
-from functools import cached_property
-import json
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
-import pickle
+from typing import Literal
 
-from findex.corpus import iter_documents
-from findex.models import DocMeta, Posting
+from findex.corpus import read_corpus
+from findex.index import IndexMapping
+from findex.models import Posting
 from findex.tokenizer import tokenize
 
+ExecutorType = Literal["serial", "threads", "processes"]
 
-class IndexMapping(collections.abc.Mapping[str, list[Posting]]):
-    """Повноцінний ідіоматичний індекс як Mapping."""
-
-    def __init__(self) -> None:
-        self._index: dict[str, list[Posting]] = {}
-        self.documents: dict[int, DocMeta] = {}
-
-    def __getitem__(self, term: str) -> list[Posting]:
-        return self._index[term.lower()]
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self._index)
-
-    def __len__(self) -> int:
-        return len(self._index)
-
-    def __contains__(self, term: object) -> bool:
-        if not isinstance(term, str):
-            return False
-        return term.lower() in self._index
-
-    @cached_property
-    def avg_doc_length(self) -> float:
-        if not self.documents:
-            return 0.0
-        total_len = sum(doc.length for doc in self.documents.values())
-        return total_len / len(self.documents)
-
-    def build_from_corpus(self, corpus_path: str | Path) -> None:
-        doc_id_counter = 0
-        for filename, text in iter_documents(corpus_path):
-            tokens = tokenize(text)
-            doc_meta = DocMeta(doc_id=doc_id_counter, path=filename, length=len(tokens))
-            self.documents[doc_id_counter] = doc_meta
-
-            positions_map: dict[str, list[int]] = {}
-            for pos, token in enumerate(tokens):
-                positions_map.setdefault(token, []).append(pos)
-
-            for token, positions in positions_map.items():
-                posting = Posting(
-                    doc_id=doc_id_counter,
-                    tf=len(positions),
-                    positions=tuple(positions),
-                )
-                self._index.setdefault(token, []).append(posting)
-
-            doc_id_counter += 1
-
-    def save_pickle(self, path: str | Path) -> None:
-        with open(path, "wb") as f:
-            pickle.dump(self, f)
-
-    @staticmethod
-    def load_pickle(path: str | Path) -> IndexMapping:
-        with open(path, "rb") as f:
-            return pickle.load(f)  # type: ignore[no-any-return]
-
-    def save_json(self, path: str | Path) -> None:
-        data = {
-            "documents": {
-                str(k): {"path": v.path, "length": v.length}
-                for k, v in self.documents.items()
-            },
-            "index": {
-                term: [{"doc_id": p.doc_id, "tf": p.tf} for p in postings]
-                for term, postings in self._index.items()
-            },
-        }
-        Path(path).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-
-    @staticmethod
-    def load_json(path: str | Path) -> IndexMapping:
-        idx = IndexMapping()
-        raw = json.loads(Path(path).read_text(encoding="utf-8"))
-        for k, v in raw.get("documents", {}).items():
-            idx.documents[int(k)] = DocMeta(
-                doc_id=int(k), path=v["path"], length=v["length"]
-            )
-        for term, postings in raw.get("index", {}).items():
-            idx._index[term] = [
-                Posting(doc_id=p["doc_id"], tf=p["tf"], positions=tuple(p.get("positions", ())))
-                for p in postings
-            ]
-        return idx
+__all__ = ["build_index_parallel", "ExecutorType", "IndexMapping"]
 
 
-InvertedIndex = IndexMapping
-Index = IndexMapping
+def _process_single_file(file_path: Path, doc_id: int) -> tuple[int, dict[str, list[int]]]:
+    content = file_path.read_text(encoding="utf-8", errors="ignore")
+    tokens = tokenize(content)
+    positions_map: dict[str, list[int]] = {}
+    for pos, token in enumerate(tokens):
+        if token not in positions_map:
+            positions_map[token] = []
+        positions_map[token].append(pos)
+    return doc_id, positions_map
 
 
-@contextmanager
-def open_index(path: str | Path) -> Generator[IndexMapping, None, None]:
-    p = Path(path)
-    if p.suffix == ".json":
-        idx = IndexMapping.load_json(p)
+def _process_single_file_wrapper(args: tuple[Path, int]) -> tuple[int, dict[str, list[int]]]:
+    file_path, doc_id = args
+    return _process_single_file(file_path, doc_id)
+
+
+def _thread_worker(item: tuple[Path, int]) -> tuple[int, dict[str, list[int]]]:
+    return _process_single_file(item[0], item[1])
+
+
+def build_index_parallel(
+    corpus_dir: Path,
+    workers: int = 4,
+    executor_type: ExecutorType = "processes",
+) -> IndexMapping:
+    idx = IndexMapping()
+    corpus_files: list[Path] = read_corpus(corpus_dir)
+
+    for doc_id, file_path in enumerate(corpus_files, start=1):
+        idx.doc_titles[doc_id] = str(file_path)
+
+    tasks: list[tuple[Path, int]] = [(fp, doc_id) for doc_id, fp in enumerate(corpus_files, start=1)]
+    results: list[tuple[int, dict[str, list[int]]]] = []
+
+    if executor_type == "serial" or workers <= 1:
+        results = [_process_single_file(fp, doc_id) for doc_id, fp in enumerate(corpus_files, start=1)]
+    elif executor_type == "threads":
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            results = list(executor.map(_thread_worker, tasks))
     else:
-        idx = IndexMapping.load_pickle(p)
-    try:
-        yield idx
-    finally:
-        pass
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            results = list(executor.map(_process_single_file_wrapper, tasks))
+
+    for doc_id, pos_map in results:
+        for term, positions in pos_map.items():
+            posting = Posting(doc_id=doc_id, tf=len(positions), positions=tuple(positions))
+            idx.add_posting(term, posting)
+
+    return idx

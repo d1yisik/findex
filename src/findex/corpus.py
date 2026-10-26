@@ -1,26 +1,14 @@
-from __future__ import annotations
-
-from collections.abc import Iterator
 from pathlib import Path
 
 
-def iter_documents(folder_path: str | Path) -> Iterator[tuple[str, str]]:
-    """Потоково повертає кортежі (filename, text) через yield."""
-    path = Path(folder_path)
-    for file_path in path.glob("*.txt"):
-        if file_path.name.startswith("~") or file_path.name.startswith("."):
-            continue
-        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-            yield file_path.name, f.read()
+def read_corpus(corpus_dir: Path) -> list[Path]:
+    """Reads and returns a sorted list of file paths from the corpus directory."""
+    if not corpus_dir.exists() or not corpus_dir.is_dir():
+        return []
+    return sorted([p for p in corpus_dir.rglob("*") if p.is_file() and not p.name.startswith(".")])
 
 
-def load_all_documents(folder_path: str | Path) -> list[tuple[str, str]]:
-    """Жадібно зчитує весь корпус файлів у пам'ять."""
-    path = Path(folder_path)
-    docs: list[tuple[str, str]] = []
-    for file_path in path.glob("*.txt"):
-        if file_path.name.startswith("~") or file_path.name.startswith("."):
-            continue
-        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-            docs.append((file_path.name, f.read()))
-    return docs
+def iter_documents(corpus_dir: Path) -> list[tuple[Path, str]]:
+    """Reads corpus directory and returns a list of (file_path, content) tuples for tests."""
+    files = read_corpus(corpus_dir)
+    return [(p, p.read_text(encoding="utf-8", errors="ignore")) for p in files]

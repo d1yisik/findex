@@ -1,124 +1,80 @@
-from __future__ import annotations
-
-import json
 import logging
-import sys
+import os
 from pathlib import Path
 
 import typer
-from rich.console import Console
-from rich.table import Table
 
-from findex.builder import IndexMapping
-from findex.ranking import BM25, TfIdf, rank_documents
+from findex.builder import ExecutorType, build_index_parallel
+from findex.search_engine import SearchEngine, SearchResult
 
-app = typer.Typer(help="findex CLI search engine tool", add_completion=False)
-err_console = Console(stderr=True)
-out_console = Console()
-
-
-def setup_logging(verbose: int) -> None:
-    logger = logging.getLogger("findex")
-    if verbose == 1:
-        logger.setLevel(logging.INFO)
-    elif verbose >= 2:
-        logger.setLevel(logging.DEBUG)
-    else:
-        logger.setLevel(logging.WARNING)
-
-    handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
-    logger.handlers.clear()
-    logger.addHandler(handler)
+app = typer.Typer(help="Findex: A simple text search engine CLI")
 
 
 @app.command()
 def index(
-    corpus_dir: Path = typer.Argument(..., help="Path to corpus directory"),
-    output: Path = typer.Option(
-        Path("index.json"), "--output", "-o", help="Output index file"
-    ),
-    verbose: int = typer.Option(
-        0, "--verbose", "-v", count=True, help="Verbosity level"
-    ),
+    corpus: Path = typer.Argument(..., help="Path to corpus directory"),
+    out: Path = typer.Option(Path("index.json"), "--out", "-o", help="Output index file"),
+    workers: int = typer.Option(os.cpu_count() or 4, "--workers", "-w", help="Number of worker threads/processes"),
+    executor: ExecutorType = typer.Option("processes", "--executor", "-e", help="Execution mode: serial, threads, processes"),
 ) -> None:
-    """Build index from text files."""
-    setup_logging(verbose)
-    if not corpus_dir.is_dir():
-        err_console.print(f"Error: Corpus directory '{corpus_dir}' does not exist.")
+    """Build inverted index from corpus with parallel execution support."""
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+    if not corpus.exists() or not corpus.is_dir():
+        logging.error("Corpus directory does not exist: %s", corpus)
         raise typer.Exit(code=1)
 
-    idx = IndexMapping()
-    idx.build_from_corpus(corpus_dir)
-    if output.suffix == ".bin":
-        idx.save_pickle(output)
-    else:
-        idx.save_json(output)
-    err_console.print(f"Successfully indexed documents into {output}")
+    try:
+        logging.info("Building index using %s executor with %d workers...", executor, workers)
+        idx = build_index_parallel(corpus, workers=workers, executor_type=executor)
+
+        if out.suffix == ".json":
+            idx.save_json(out)
+        else:
+            idx.save_pickle(out)
+
+        logging.info("Index successfully saved to %s (%d documents indexed)", out, len(idx.doc_titles))
+    except Exception as e:
+        logging.error("Worker failed with exception: %s", e, exc_info=True)
+        raise typer.Exit(code=1) from e
 
 
 @app.command()
 def search(
-    query: str = typer.Argument(..., help="Search query string"),
-    index_file: Path = typer.Option(
-        Path("index.json"), "--index", "-i", help="Index file path"
-    ),
-    engine: str = typer.Option("bm25", "--engine", "-e", help="Scoring engine"),
-    json_out: bool = typer.Option(False, "--json", help="Output results as JSON"),
-    verbose: int = typer.Option(
-        0, "--verbose", "-v", count=True, help="Verbosity level"
-    ),
+    query: str = typer.Argument(..., help="Search query"),
+    index_path: Path = typer.Option(Path("index.json"), "--index", "-i", help="Path to index file"),
 ) -> None:
-    """Search for query in index."""
-    setup_logging(verbose)
-    if not index_file.exists():
-        err_console.print(f"Error: Index file '{index_file}' not found.")
+    """Search the index for a query."""
+    if not index_path.exists():
         raise typer.Exit(code=1)
 
-    idx = IndexMapping.load_json(index_file) if index_file.suffix == ".json" else IndexMapping.load_pickle(index_file)
-    terms = query.lower().split()
-    matched_docs = set(idx.documents.keys())
-
-    scorer_obj = BM25(idx) if engine == "bm25" else TfIdf(idx)
-    results = rank_documents(idx, terms, matched_docs, scorer_obj)
-
-    if json_out:
-        data = [{"doc_id": r.doc_id, "path": r.path, "score": r.score} for r in results]
-        out_console.print(json.dumps(data, indent=2, ensure_ascii=False))
-        return
-
-    table = Table(title=f"Search Results for '{query}' ({engine})")
-    table.add_column("Doc ID", justify="right", style="cyan")
-    table.add_column("Path", style="magenta")
-    table.add_column("Score", justify="right", style="green")
-
-    for r in results:
-        table.add_row(str(r.doc_id), r.path, str(r.score))
-
-    out_console.print(table)
-
-
-@app.command()
-def stats(
-    index_file: Path = typer.Option(
-        Path("index.json"), "--index", "-i", help="Index file path"
-    ),
-    verbose: int = typer.Option(
-        0, "--verbose", "-v", count=True, help="Verbosity level"
-    ),
-) -> None:
-    """Show index statistics."""
-    setup_logging(verbose)
-    if not index_file.exists():
-        err_console.print(f"Error: Index file '{index_file}' not found.")
-        raise typer.Exit(code=1)
-
-    idx = IndexMapping.load_json(index_file) if index_file.suffix == ".json" else IndexMapping.load_pickle(index_file)
-    err_console.print(f"Terms: {len(idx)}, Documents: {len(idx.documents)}")
+    try:
+        engine = SearchEngine(index_path)
+        results = engine.search(query)
+        for res in results:
+            if isinstance(res, SearchResult):
+                print(f"{res.doc_path}: {res.score}")
+            else:
+                print(f"{res}")
+    except Exception as e:
+        logging.error("Search error: %s", e)
+        raise typer.Exit(code=1) from e
 
 
 def main() -> None:
-    app()
+    try:
+        typer.run(index)
+    except SystemExit as e:
+        if e.code != 0 and e.code is not None:
+            raise
+
+
+def search_main() -> None:
+    try:
+        typer.run(search)
+    except SystemExit as e:
+        if e.code != 0 and e.code is not None:
+            raise
 
 
 if __name__ == "__main__":

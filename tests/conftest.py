@@ -1,6 +1,6 @@
 from pathlib import Path
 import pytest
-from findex.builder import IndexMapping
+from findex.index import IndexMapping
 
 
 @pytest.fixture

@@ -2,7 +2,7 @@ from pathlib import Path
 from findex.builder import IndexMapping
 from findex.corpus import iter_documents
 from findex.decorators import cached
-from findex.models import Posting
+from findex.models import DocMeta, Posting
 from findex.search import search_query
 
 
@@ -17,12 +17,10 @@ def test_iter_documents(tmp_path: Path) -> None:
 
 def test_search_query_with_cache() -> None:
     idx = IndexMapping()
-    idx.documents[0] = DocMeta(doc_id=0, path="doc1.txt", length=5) if "DocMeta" in globals() else None  # type: ignore
+    idx.documents[0] = DocMeta(doc_id=0, path="doc1.txt", length=5)
     idx._index["hello"] = [Posting(doc_id=0, tf=1, positions=(0,))]  # pyright: ignore[reportPrivateUsage]
     
-    # Перший виклику з пошуком через BM25
     res1 = search_query(idx, "hello", engine="bm25")
-    # Другий виклик перевіряє роботу кешу @cached
     res2 = search_query(idx, "hello", engine="bm25")
     assert res1 == res2
 
