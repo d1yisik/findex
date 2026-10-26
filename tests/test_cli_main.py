@@ -5,8 +5,8 @@ from _pytest.monkeypatch import MonkeyPatch
 import pytest
 
 from findex.cli import main as cli_main
-from findex.cli import main as index_main
-from findex.search import main as search_main
+from findex.cli import index_main
+from findex.cli import search_main
 
 
 def test_index_and_search_cli_main(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:

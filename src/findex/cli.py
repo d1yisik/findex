@@ -1,18 +1,83 @@
+# pyright: reportUnknownVariableType=none
+# pyright: reportUnknownMemberType=none
+# pyright: reportUnknownArgumentType=none
+# pyright: reportAttributeAccessIssue=none
+
+import asyncio
+import json
 import logging
 import os
+import sys
+import time
 from pathlib import Path
 
+from rich.live import Live
+from rich.table import Table
 import typer
 
 from findex.builder import ExecutorType, build_index_parallel
+from findex.crawler import AsyncCrawler
 from findex.search_engine import SearchEngine, SearchResult
 
 app = typer.Typer(help="Findex: A simple text search engine CLI")
 
 
-@app.command()
+@app.command(name="crawl")
+def crawl(
+    url: str = typer.Argument(..., help="Start URL to crawl"),
+    out: Path = typer.Option(Path("corpus.jsonl"), "--out", "-o", help="Output JSONL corpus file"),
+    max_pages: int = typer.Option(200, "--max-pages", "-m", help="Maximum pages to collect"),
+    concurrency: int = typer.Option(5, "--concurrency", "-c", help="Max concurrent requests"),
+    log_file: Path = typer.Option(Path("crawl.log"), "--log-file", help="Path to log file"),
+) -> None:
+    """Async crawler with rich progress reporting and JSONL output."""
+    async def _run_crawl():
+        crawler = AsyncCrawler(start_urls=[url], max_pages=max_pages, max_concurrency=concurrency)
+        start_time = time.monotonic()
+
+        log_handle = log_file.open("w", encoding="utf-8")
+        jsonl_handle = out.open("w", encoding="utf-8")
+
+        def make_table() -> Table:
+            elapsed = max(time.monotonic() - start_time, 0.1)
+            pages_per_sec = crawler.pages_crawled / elapsed
+            table = Table(title="Findex Async Crawler (Lab 06)")
+            table.add_column("Metric", style="cyan")
+            table.add_column("Value", style="bold green")
+            table.add_row("Pages Collected", str(crawler.pages_crawled))
+            table.add_row("Pages / sec", f"{pages_per_sec:.2f}")
+            table.add_row("Active Requests", str(crawler.active_requests))
+            table.add_row("Error Count", str(crawler.error_count))
+            table.add_row("Queue Depth", str(crawler.queue.qsize()))
+            return table
+
+        with Live(make_table(), refresh_per_second=4) as live:
+            async for page in crawler.crawl_stream():
+                log_entry = f"URL: {page.url} | Status: {page.status_code} | Time: {page.elapsed_time:.3f}s | Error: {page.error}\n"
+                log_handle.write(log_entry)
+                log_handle.flush()
+
+                if page.status_code == 200 and page.text:
+                    record = {
+                        "url": page.url,
+                        "status": page.status_code,
+                        "text": page.text,
+                        "elapsed": page.elapsed_time,
+                    }
+                    jsonl_handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    jsonl_handle.flush()
+
+                live.update(make_table())
+
+        log_handle.close()
+        jsonl_handle.close()
+
+    asyncio.run(_run_crawl())
+
+
+@app.command(name="index")
 def index(
-    corpus: Path = typer.Argument(..., help="Path to corpus directory"),
+    corpus: Path = typer.Argument(..., help="Path to corpus directory or jsonl file"),
     out: Path = typer.Option(Path("index.json"), "--out", "-o", help="Output index file"),
     workers: int = typer.Option(os.cpu_count() or 4, "--workers", "-w", help="Number of worker threads/processes"),
     executor: ExecutorType = typer.Option("processes", "--executor", "-e", help="Execution mode: serial, threads, processes"),
@@ -20,8 +85,8 @@ def index(
     """Build inverted index from corpus with parallel execution support."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
-    if not corpus.exists() or not corpus.is_dir():
-        logging.error("Corpus directory does not exist: %s", corpus)
+    if not corpus.exists():
+        logging.error("Corpus path does not exist: %s", corpus)
         raise typer.Exit(code=1)
 
     try:
@@ -39,7 +104,7 @@ def index(
         raise typer.Exit(code=1) from e
 
 
-@app.command()
+@app.command(name="search")
 def search(
     query: str = typer.Argument(..., help="Search query"),
     index_path: Path = typer.Option(Path("index.json"), "--index", "-i", help="Path to index file"),
@@ -61,19 +126,32 @@ def search(
         raise typer.Exit(code=1) from e
 
 
-def main() -> None:
+def index_main() -> None:
+    """Прямий виклик з перехопленням успішного виходу SystemExit(0)."""
     try:
         typer.run(index)
     except SystemExit as e:
-        if e.code != 0 and e.code is not None:
+        code = getattr(e, "code", 0)
+        if code != 0 and code is not None:
             raise
 
 
 def search_main() -> None:
+    """Прямий виклик з перехопленням успішного виходу SystemExit(0)."""
     try:
         typer.run(search)
     except SystemExit as e:
-        if e.code != 0 and e.code is not None:
+        code = getattr(e, "code", 0)
+        if code != 0 and code is not None:
+            raise
+
+
+def main() -> None:
+    try:
+        app()
+    except SystemExit as e:
+        code = getattr(e, "code", 0)
+        if code != 0 and code is not None:
             raise
 
 
